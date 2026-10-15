@@ -49,15 +49,19 @@ From scratch, about three hours on one RTX 4070 (the validation step inside take
 ./reproduce.sh          # -> work/submission.csv, and the fold-0 validation score on the way
 ```
 
-From the released weights (attached to the GitHub release of this repository), about 15 minutes: put `detector_fold0.pt` ... `detector_fold3.pt` and
-`segmenter_final.pt` into `work/weights/`, then
+From the trained weights in `weights/` (the ones behind the submitted file), about 20 minutes:
 
 ```bash
+mkdir -p work/weights && cp weights/*.pt work/weights/
 for k in 0 1 2 3; do python run.py propose --fold $k --split test; python run.py segment --name final --split test --fold $k; done
-python run.py submit --name final
+python run.py submit --name final                                   # work/submission.csv
+python run.py propose --fold 0 --split heldout                      # the fold-0 validation score
+python run.py segment --name validation --split heldout --fold 0
+python run.py evaluate --name validation
 ```
 
-With these weights the commands reproduce the submitted file byte for byte on the same software versions.
+With these weights the commands reproduce the submitted file byte for byte on the same software versions, and they
+produce everything notebooks/pipeline.ipynb reads.
 
 ## Code
 
@@ -71,6 +75,7 @@ With these weights the commands reproduce the submitted file byte for byte on th
 | run.py | 73 | command line for every step |
 | reproduce.sh | 17 | the steps in order |
 | folds.json | | image -> fold (whole calendar months per fold) |
+| weights/ | | the four detectors and the two mask models (`final`, `validation`) |
 
 ## Validation
 

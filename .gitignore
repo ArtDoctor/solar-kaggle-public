@@ -9,3 +9,4 @@ report/*.bbl
 report/*.blg
 report/*.log
 report/*.out
+!weights/*.pt
