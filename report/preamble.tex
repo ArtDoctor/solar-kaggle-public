@@ -1,0 +1,14 @@
+% Packages and settings for report.tex (the competition template loads this file after \documentclass[sigconf]{acmart}).
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+
+% Gray guide text of the template: \guide{...} is shown only while \guideStyletrue is set.
+\newif\ifguideStyle
+\newcommand{\guide}[1]{\ifguideStyle{\color{gray!65}\itshape #1}\fi}
+
+% No ACM publication boilerplate (report.tex also passes the nonacm class option): this is a competition report.
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}

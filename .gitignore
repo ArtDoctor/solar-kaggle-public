@@ -1,0 +1,11 @@
+data
+work*/
+__pycache__/
+*.pt
+.ipynb_checkpoints/
+.venv/
+report/*.aux
+report/*.bbl
+report/*.blg
+report/*.log
+report/*.out
