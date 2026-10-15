@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Figures and validation numbers of the report, from the outputs of reproduce.sh (run from the repository root).
 
-  python report/figures.py   ->  report/figures/{pipeline,examples,density}.png, numbers.json, numbers.tex"""
+  python report/figures.py   ->  report/figures/{pipeline,examples,density,agreement}.png, numbers.json, numbers.tex"""
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -20,6 +21,7 @@ from filaments import data, detector, instances, metric, segmenter  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "figures"
 COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231"]
+OURS, ANNOTATORS = "#2a78d6", "#eb6834"   # agreement figure: our predictions, another annotator
 plt.rcParams.update({"font.size": 7, "axes.titlesize": 7})
 
 
@@ -97,6 +99,100 @@ def examples_figure(stems, selection):
     fig.savefig(OUT / "examples.png", dpi=300)
 
 
+def overlaps(pairs):
+    """Statistics of the organisers' self-evaluation notebook over (truth RLEs, predicted RLEs) pairs, one per record:
+    IoU of every overlapping pair, predictions overlapping each true filament (1:n) and true filaments overlapping each
+    prediction (n:1), and the PQ counts."""
+    ious, per_truth, per_pred, counts = [], [], [], np.zeros(4)
+    for truth, pred in pairs:
+        if not truth or not pred:
+            per_truth += [0] * len(truth); per_pred += [0] * len(pred); counts += [0, 0, len(pred), len(truth)]
+            continue
+        iou = np.asarray(cocomask.iou(truth, pred, [0] * len(pred)))
+        ious += iou[iou > 0].tolist()
+        per_truth += (iou > 0).sum(1).tolist(); per_pred += (iou > 0).sum(0).tolist()
+        hit = iou > 0.5
+        counts += [iou[hit].sum(), hit.sum(), (hit.sum(0) == 0).sum(), (hit.sum(1) == 0).sum()]
+    return np.asarray(ious), Counter(per_truth), Counter(per_pred), metric.panoptic_quality(counts)
+
+
+def relation_shares(counter):
+    total = sum(counter.values())
+    return [counter[0] / total, counter[1] / total, sum(v for k, v in counter.items() if k >= 2) / total]
+
+
+def matched(truth, pred):
+    """Which true filaments have a prediction with IoU > 0.5."""
+    if not truth or not pred:
+        return np.zeros(len(truth), bool)
+    return (np.asarray(cocomask.iou(truth, pred, [0] * len(pred))) > 0.5).any(1)
+
+
+def agreement(stems, selection):
+    """Agreement with the annotators on the validation fold: our predictions against each record, one annotator against
+    another on the images with several records, recall by annotator consensus and by filament size, and how many of our
+    false positives another annotator drew."""
+    recs = data.records()
+    pred = {s: [r for r, _ in selection[s]] for s in stems}
+    multi = [s for s in stems if len(recs[s]) > 1]
+    ours = overlaps([(r["rles"], pred[s]) for s in stems for r in recs[s]])
+    ours_multi = overlaps([(r["rles"], pred[s]) for s in multi for r in recs[s]])
+    between = overlaps([(a["rles"], b["rles"]) for s in multi for a in recs[s] for b in recs[s] if a is not b])
+
+    consensus, sizes, false_pos = Counter(), [], [0, 0]
+    for s in stems:
+        for r in recs[s]:
+            found = matched(r["rles"], pred[s])
+            sizes += zip(cocomask.area(r["rles"]).tolist() if r["rles"] else [], found)
+            others = [o["rles"] for o in recs[s] if o is not r]
+            if len(recs[s]) == 3:              # how many of the three annotators drew each filament
+                for g, hit in zip(r["rles"], found):
+                    k = 1 + sum(bool(matched([g], o)[0]) for o in others)
+                    consensus[k, "n"] += 1; consensus[k, "hit"] += int(hit)
+            if len(recs[s]) > 1 and pred[s]:   # our false positives against this record that another annotator drew
+                unmatched = [p for p, hit in zip(pred[s], matched(pred[s], r["rles"])) if not hit]
+                false_pos[0] += len(unmatched)
+                false_pos[1] += sum(any(matched([p], o)[0] for o in others) for p in unmatched)
+    area, found = np.array([a for a, _ in sizes]), np.array([f for _, f in sizes])
+    bins = [(0, 1000), (1000, 2500), (2500, 6000), (6000, np.inf)]
+
+    fig, axes = plt.subplots(1, 3, figsize=(7.1, 1.65))
+    series = [(ours_multi, OURS), (between, ANNOTATORS)]          # the same images (two or three records) for both
+    edges = np.linspace(0, 1, 26)
+    for ax, (name, transform) in zip(axes[:2], [("IoU", lambda x: x), ("Dice", lambda x: 2 * x / (1 + x))]):
+        means = []
+        for (ious, *_), color in series:
+            values = transform(ious)
+            ax.hist(values, bins=edges, weights=np.full(len(values), 1 / len(values)), histtype="step", color=color, lw=1.2)
+            means.append(values.mean())
+        ax.text(0.02, 0.97, f"mean {means[0]:.2f} vs {means[1]:.2f}", transform=ax.transAxes, va="top", color="0.3")
+        ax.set_xlabel(f"{name} of overlapping pairs"); ax.set_ylabel("share of pairs")
+    ax = axes[2]
+    x = np.array([0, 1, 2, 3.8, 4.8, 5.8])
+    for offset, (result, color) in zip((-0.19, 0.19), series):
+        ax.bar(x + offset, relation_shares(result[1]) + relation_shares(result[2]), width=0.36, color=color,
+               edgecolor="white", lw=0.5)
+    ax.set_xticks(x, ["1:0", "1:1", "1:2+", "0:1", "1:1", "2+:1"]); ax.set_ylabel("share")
+    ax.text(1, -0.3, "per true filament", ha="center", transform=ax.get_xaxis_transform(), color="0.3")
+    ax.text(4.8, -0.3, "per prediction", ha="center", transform=ax.get_xaxis_transform(), color="0.3")
+    for a in axes:
+        a.spines[["top", "right"]].set_visible(False)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in (OURS, ANNOTATORS)]
+    fig.legend(handles, ["ours vs annotator", "annotator vs another annotator"], loc="upper center", ncol=2, frameon=False)
+    fig.tight_layout(rect=(0, 0, 1, 0.9), w_pad=1.2); fig.savefig(OUT / "agreement.png", dpi=300)
+
+    return {"ours": dict(ours[3], mean_iou=float(ours[0].mean()), mean_dice=float((2 * ours[0] / (1 + ours[0])).mean()),
+                         truth=relation_shares(ours[1]), pred=relation_shares(ours[2])),
+            "ours_multi": dict(ours_multi[3], mean_iou=float(ours_multi[0].mean()), truth=relation_shares(ours_multi[1]), pred=relation_shares(ours_multi[2])),
+            "between": dict(between[3], mean_iou=float(between[0].mean()),
+                            mean_dice=float((2 * between[0] / (1 + between[0])).mean()),
+                            truth=relation_shares(between[1]), pred=relation_shares(between[2])),
+            "consensus": {k: {"filaments": consensus[k, "n"], "recall": consensus[k, "hit"] / consensus[k, "n"]} for k in (1, 2, 3)},
+            "size": [{"low": lo, "high": None if np.isinf(hi) else hi, "filaments": int(((area >= lo) & (area < hi)).sum()),
+                      "recall": float(found[(area >= lo) & (area < hi)].mean())} for lo, hi in bins],
+            "false_positives": {"multi": false_pos[0], "drawn_by_another": false_pos[1]}, "multi_images": len(multi)}
+
+
 def write_macros(numbers):
     """The validation numbers as LaTeX macros for report.tex."""
     v, r = numbers["validation"], numbers["by_records"]
@@ -104,6 +200,24 @@ def write_macros(numbers):
               "valHi": f"{v['high']:.3f}", "valTP": f"{v['TP']:,}", "valFP": f"{v['FP']:,}", "valFN": f"{v['FN']:,}",
               "valPQone": f"{r[1]['PQ']:.3f}", "valPQtwo": f"{r[2]['PQ']:.3f}", "valPQthree": f"{r[3]['PQ']:.3f}",
               "testInstances": f"{numbers['test']['instances']:,}"}
+    a = numbers["agreement"]
+    pct = lambda x: f"{100 * x:.0f}"                                                     # noqa: E731
+    macros.update({"agIoU": f"{a['ours']['mean_iou']:.2f}", "agDice": f"{a['ours']['mean_dice']:.2f}",
+                   "agTruthOne": pct(a["ours"]["truth"][1]), "agTruthNone": pct(a["ours"]["truth"][0]),
+                   "agTruthMany": f"{100 * a['ours']['truth'][2]:.1f}", "agPredOne": pct(a["ours"]["pred"][1]),
+                   "agPredNone": pct(a["ours"]["pred"][0]), "agPredMany": f"{100 * a['ours']['pred'][2]:.1f}",
+                   "multiPQ": f"{a['ours_multi']['PQ']:.3f}", "multiSQ": f"{a['ours_multi']['SQ']:.3f}",
+                   "multiIoU": f"{a['ours_multi']['mean_iou']:.2f}", "annPQ": f"{a['between']['PQ']:.3f}",
+                   "annSQ": f"{a['between']['SQ']:.3f}", "annIoU": f"{a['between']['mean_iou']:.2f}",
+                   "annDice": f"{a['between']['mean_dice']:.2f}", "annTruthOne": pct(a["between"]["truth"][1]),
+                   "fpMulti": f"{a['false_positives']['multi']:,}", "multiImages": str(a["multi_images"]),
+                   "fpOther": pct(a["false_positives"]["drawn_by_another"] / a["false_positives"]["multi"])})
+    for k, word in zip((1, 2, 3), ("One", "Two", "Three")):
+        macros[f"cons{word}N"] = f"{a['consensus'][k]['filaments']:,}"
+        macros[f"cons{word}R"] = f"{a['consensus'][k]['recall']:.2f}"
+    for i, word in enumerate(("A", "B", "C", "D")):
+        macros[f"size{word}N"] = f"{a['size'][i]['filaments']:,}"
+        macros[f"size{word}R"] = f"{a['size'][i]['recall']:.2f}"
     (OUT / "numbers.tex").write_text("".join(f"\\newcommand{{\\{k}}}{{{v}}}\n" for k, v in macros.items()))
 
 
@@ -128,7 +242,7 @@ def main():
             val_selection = selection
     numbers["density_curve"] = [dict(density=float(d), PQ=float(q), low=float(a), high=float(b)) for d, q, a, b in curve]
     d, pq, lo, hi = map(np.array, zip(*curve))
-    fig, ax = plt.subplots(figsize=(3.3, 1.9))
+    fig, ax = plt.subplots(figsize=(3.3, 1.7))
     ax.fill_between(d, lo, hi, color="C0", alpha=0.2, lw=0, label="95% bootstrap interval")
     ax.plot(d, pq, "o-", color="C0", ms=3, label="fold 0")
     ax.axvline(instances.DENSITY, color="gray", ls=":", lw=0.8)
@@ -139,6 +253,7 @@ def main():
     numbers["test"] = {"instances": sum(map(len, test_selection.values())), "cutoff": cutoff}
     pipeline_figure(max(test_selection, key=lambda s: len(test_selection[s])), test_selection)
     examples_figure([s for s in val_stems if len(recs[s]) == 3][1:5], val_selection)
+    numbers["agreement"] = agreement(val_stems, val_selection)
     (OUT / "numbers.json").write_text(json.dumps(numbers, indent=1, default=float) + "\n")
     write_macros(numbers)
     print(json.dumps(numbers, indent=1, default=float))
