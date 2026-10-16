@@ -93,5 +93,11 @@ records.
 Training noise matters at this scale: three mask models trained with this recipe in separate runs
 scored 0.462 (the run above), 0.466 and 0.468 on the same validation boxes.
 
+Validation uses detector 0 alone, since the other three detectors trained on fold 0; the submission merges all four.
+To test the merge out of fold, three detectors trained on folds 1-3 in separate runs (12 and 30 epochs, and one hour
+during development) were merged: 0.465 against 0.464 on average alone (paired +0.002, interval -0.003 to +0.006). The
+merge costs nothing, and its gain is within the noise. On the public leaderboard, detector 0 alone scores 0.39 and the
+four merged 0.40.
+
 The submission density (6.2 instances per image) is the best one on validation; public-board probes during development
 agreed (4.9 per image: 0.39, 6.4: 0.39, 8.3: 0.38).

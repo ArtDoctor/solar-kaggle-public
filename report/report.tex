@@ -59,7 +59,7 @@
 
     At inference the mask model runs on the 40 best boxes of each detector and image. The probabilities are averaged over four flips, mapped back to the original crop and thresholded at 0.40. The largest 8-connected component becomes the candidate mask, and candidates smaller than 150 pixels are discarded.
 
-\subsection{From candidates to instances}
+\subsection{From candidates to instances}\label{sec:instances}
     Most filaments are found by all four detectors, so each has up to four slightly different candidates. We visit the candidates in order of score and add each one to an earlier object if their masks overlap with an IoU above 0.5; each detector contributes at most one candidate to an object. The score of an object is the mean confidence of the four detectors, where a detector that missed the object contributes zero. Its mask is that of its highest-scoring candidate.
 
     The objects are then selected greedily in order of score. Each object loses the pixels already taken by earlier objects and keeps the largest remaining piece. It is dropped if this piece is smaller than 150 pixels or than 40\% of the original mask, or if the mask duplicates one that is already kept (IoU of at least 0.8). Kept pieces less than 8 pixels apart are merged into one instance, which joins filaments that the mask model broke into fragments. The output is pixel-disjoint, so an annotated filament can match at most one prediction. The score cutoff is found by bisection so that the test set receives 6.2 instances per image on average, the density with the highest validation PQ (Figure~\ref{fig:density}).
@@ -80,10 +80,10 @@
 \section{Evaluation}\label{sec:evaluation}
 
 \subsection{Protocol}
-    All validation numbers are computed on fold~0. Its boxes come from the detector trained on folds 1--3, and its masks from a mask model trained without fold~0, whose training crops are prompted with the boxes of detectors 1--3; no model has seen these images. The other three detectors were trained on fold~0, so validation uses one detector while the submission uses all four. PQ is computed as in the organisers' self-evaluation notebook. Within each annotator record, a pair of an annotated and a predicted mask with an IoU above 0.5 is a true positive, unmatched predictions are false positives, and unmatched annotations are false negatives. The counts and IoUs are pooled over all records. We report 95\% bootstrap intervals over images (2,000 resamples), and paired bootstrap intervals for differences between variants.
+    All validation numbers are computed on fold~0. Its boxes come from the detector trained on folds 1--3, and its masks from a mask model trained without fold~0, whose training crops are prompted with the boxes of detectors 1--3; no model has seen these images. The other three detectors were trained on fold~0, so validation uses one detector while the submission merges four (Section~\ref{sec:instances}). To test the merge out of fold, we merged three detectors trained on folds 1--3 in separate runs (12 and 30 epochs, and one hour during development). They share their training data, so they are more alike than the k-fold detectors. Merged, they score 0.465, against 0.464 on average alone (Table~\ref{tab:ablation}): the merge costs nothing out of fold, and its gain is within the noise. We did not train four nested detectors inside folds 1--3, each of which would see only 9/16 of the images. PQ is computed as in the organisers' self-evaluation notebook. Within each annotator record, a pair of an annotated and a predicted mask with an IoU above 0.5 is a true positive, unmatched predictions are false positives, and unmatched annotations are false negatives. The counts and IoUs are pooled over all records. We report 95\% bootstrap intervals over images (2,000 resamples), and paired bootstrap intervals for differences between variants.
 
 \subsection{Results}
-    Table~\ref{tab:results} gives the validation score at the submission density. Images with one, two and three annotator records score about the same. The PQ curve over the number of instances per image peaks at 6.2 and stays within 0.005 of its maximum between 5.4 and 7.0 (Figure~\ref{fig:density}). Leaderboard submissions at other densities during development agreed with this curve (4.9 per image: 0.39, 6.4: 0.39, 8.3: 0.38). Training noise is of the same order as many of the effects we measure: three mask models trained with this recipe in separate runs scored 0.462 (the run reported here), 0.466 and 0.468 on the same validation boxes. The test submission has \testInstances{} instances on 180 images and scores 0.40 on the public leaderboard.
+    Table~\ref{tab:results} gives the validation score at the submission density. Images with one, two and three annotator records score about the same. The PQ curve over the number of instances per image peaks at 6.2 and stays within 0.005 of its maximum between 5.4 and 7.0 (Figure~\ref{fig:density}). Training noise is of the same order as many of the effects we measure: three mask models trained with this recipe in separate runs scored 0.462 (the run reported here), 0.466 and 0.468 on the same validation boxes. The test submission has \testInstances{} instances on 180 images and scores 0.40 on the public leaderboard.
 
 \begin{table}[t]
   \caption{Validation results (fold 0, 156 images, 248 annotator records) at 6.2 instances per image.}
@@ -142,7 +142,7 @@
 \end{table}
 
 \subsection{Ablations and alternatives}
-    Table~\ref{tab:ablation} lists what each part of the pipeline contributes. The components are worth between 0.002 and 0.02 PQ each, several of them less than the training noise. A larger variant with a second detector family and a gradient-boosted re-scorer of the candidates was 0.0075 better on validation (interval 0.000 to 0.015) but scored the same 0.40 on the public leaderboard, so we removed it to keep the pipeline simple.
+    Table~\ref{tab:ablation} lists what each part of the pipeline contributes. The components are worth between 0.002 and 0.02 PQ each, several of them less than the training noise. A larger variant with a second detector family and a gradient-boosted re-scorer of the candidates was 0.0075 better on validation (interval 0.000 to 0.015) but not on the test set, so we removed it to keep the pipeline simple. The table uses one detector; in the larger variant, dropping the fragment merge cost 0.001 instead of 0.007.
 
     Before settling on this design we tried several others. Scored early in the project against the first annotator record of each fold-0 image only (so not comparable with Table~\ref{tab:results}), classical thresholding of dark structures reached a PQ of 0.110 with about nine false positives per true positive, SAM~2.1 \cite{ravi2025sam2} prompted with our boxes but not fine-tuned 0.249, a full-disk U-Net with connected components 0.336, and Mask R-CNN \cite{he2017maskrcnn} 0.338, against 0.414 for the first version of our two-stage pipeline.
 
@@ -159,6 +159,7 @@
     Detection in two views (both sizes, no flips) & $-0.002$ ($-0.009$, $+0.005$) \\
     No flip averaging of mask probabilities & $-0.005$ ($-0.010$, $-0.001$) \\
     No merging of fragments ($\le8$ px) & $-0.007$ ($-0.013$, $-0.001$) \\
+    Three detectors of folds 1--3, merged & $+0.002$ ($-0.003$, $+0.006$) \\
     Adding a second detector family & $+0.005$ ($-0.001$, $+0.011$) \\
     Detectors trained 30 instead of 12 epochs & $-0.000$ ($-0.009$, $+0.008$) \\
     Mask model trained 12 instead of 24 epochs & $-0.004$ ($-0.009$, $+0.001$) \\
