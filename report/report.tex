@@ -37,8 +37,8 @@
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=\textwidth]{figures/pipeline.png}
-  \caption{The pipeline on a test image. Four detectors propose boxes (one colour per detector). Each box becomes a crop with a box prompt, which the U-Net turns into a mask probability. The candidates of all detectors are merged and selected without overlap.}
+  \includegraphics[width=\textwidth]{figures/pipeline.pdf}
+  \caption{The pipeline on a test image. Four YOLO26s detectors (one colour each; coinciding boxes are drawn nested) propose boxes on eight views of the image, fused by WBF. The U-Net turns the crop and binary box channel of each box into a mask probability, and the candidates of all detectors are merged and selected without overlap.}
   \label{fig:pipeline}
 \end{figure*}
 

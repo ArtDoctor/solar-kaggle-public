@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Figures and validation numbers of the report, from the outputs of reproduce.sh (run from the repository root).
 
-  python report/figures.py   ->  report/figures/{pipeline,examples,density,agreement}.png, numbers.json, numbers.tex"""
+  python report/figures.py   ->  report/figures/{pipeline,examples,density,agreement}.png, pipeline.pdf, numbers.json, numbers.tex"""
 import json
 import sys
 from collections import Counter
@@ -14,6 +14,9 @@ from pycocotools import mask as cocomask
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib import font_manager  # noqa: E402
+from matplotlib.patches import FancyArrowPatch  # noqa: E402
+from matplotlib.transforms import Affine2D  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import run  # noqa: E402
@@ -22,6 +25,10 @@ from filaments import data, detector, instances, metric, segmenter  # noqa: E402
 OUT = Path(__file__).resolve().parent / "figures"
 COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231"]
 OURS, ANNOTATORS = "#2a78d6", "#eb6834"   # agreement figure: our predictions, another annotator
+YELLOW, PPI, DEPTH = "#f2d21b", 600, (0.42, 0.2)       # pipeline: zoom window, raster resolution, perspective
+SANS = "Linux Biolinum O"                                  # the sans font of the acmart class
+for font in Path("/usr/share/texlive/texmf-dist/fonts/opentype/public/libertine").glob("LinBiolinum_*.otf"):
+    font_manager.fontManager.addfont(str(font))
 plt.rcParams.update({"font.size": 7, "axes.titlesize": 7})
 
 
@@ -49,36 +56,126 @@ def window_around(rle, half):
     return (cx - half, cy - half, cx + half, cy + half)
 
 
+def picture(image, window, inches, boxes=(), outlines=(), cmap="gray", vmax=255):
+    """RGB picture of image[window] at PPI for a side of `inches`, with boxes [(xyxy, colour, pt)] and mask outlines
+    [(rles, colour, pt)] drawn into the pixels, so that it can be shown in perspective."""
+    x0, y0, x1, y1 = window
+    scale = inches * PPI / max(x1 - x0, y1 - y0)
+    pixels = cv2.resize(image[y0:y1, x0:x1].astype(np.float32), (round((x1 - x0) * scale), round((y1 - y0) * scale)),
+                        interpolation=cv2.INTER_AREA)
+    out = np.ascontiguousarray((plt.get_cmap(cmap)(np.clip(pixels / vmax, 0, 1))[..., :3] * 255).astype(np.uint8))
+    width = lambda pt: max(1, round(pt * PPI / 72))                                       # noqa: E731
+    color = lambda c: tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))                         # noqa: E731
+    for b, c, pt in boxes:
+        p = np.round((np.asarray(b, float) - [x0, y0, x0, y0]) * scale * 16).astype(int).tolist()
+        cv2.rectangle(out, p[:2], p[2:], color(c), width(pt), cv2.LINE_AA, shift=4)
+    for rles, c, pt in outlines:
+        for rle in rles:
+            m, mx, my = data.decode_window(rle)
+            contours = [np.round((k[:, 0] + [mx - x0, my - y0]) * scale * 16).astype(np.int32)
+                        for k in cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0]]
+            cv2.polylines(out, contours, True, color(c), width(pt), cv2.LINE_AA, shift=4)
+    return out
+
+
+def card(ax, pic, x, y, s, alpha=1.0, zorder=3):
+    """A picture in perspective, standing in the depth plane: front edge at x from y to y + s."""
+    t = Affine2D(np.array([[DEPTH[0] * s, 0, x], [DEPTH[1] * s, s, y], [0, 0, 1.0]])) + ax.transData
+    ax.imshow(pic, extent=(0, 1, 0, 1), transform=t, alpha=alpha, zorder=zorder)
+    corners = [(x, y), (x + DEPTH[0] * s, y + DEPTH[1] * s), (x + DEPTH[0] * s, y + DEPTH[1] * s + s), (x, y + s)]
+    ax.add_patch(plt.Polygon(corners, fill=False, ec="0.25", lw=0.5, alpha=alpha, zorder=zorder + 0.05))
+
+
+def slab(ax, x, y, w, h, fill, edge, zorder):
+    """A feature map w thick and h high and deep: front, top and side faces, the latter two shaded."""
+    dx, dy = DEPTH[0] * h, DEPTH[1] * h
+    r, g, b = matplotlib.colors.to_rgb(fill)
+    for pts, f in [([(x + w, y), (x + w + dx, y + dy), (x + w + dx, y + h + dy), (x + w, y + h)], 0.8),
+                   ([(x, y + h), (x + w, y + h), (x + w + dx, y + h + dy), (x + dx, y + h + dy)], 0.92),
+                   ([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], 1.0)]:
+        ax.add_patch(plt.Polygon(pts, fc=(r * f, g * f, b * f), ec=edge, lw=0.45, joinstyle="round", zorder=zorder))
+
+
+def arrow(ax, x, y, length, text=None):
+    ax.add_patch(FancyArrowPatch((x, y), (x + length, y), arrowstyle="-|>,head_length=3.0,head_width=1.7", color="0.2", lw=0.8,
+                                 shrinkA=0, shrinkB=0, zorder=6))
+    if text:
+        ax.text(x + length / 2, y + 0.04, text, ha="center", va="bottom", fontsize=6.5, family=SANS, color="0.35", linespacing=1.0)
+
+
 def pipeline_figure(stem, selection):
+    """The pipeline on one test image: pictures as cards in perspective, the networks as stacks of feature maps."""
     image = data.load_image(stem, test=True)
     full = (0, 0, data.SIZE, data.SIZE)
     best = max(selection[stem], key=lambda x: x[1])[0]
     zoom = window_around(best, 300)
-    fig, axes = plt.subplots(1, 6, figsize=(7.1, 1.55))
-    show(axes[0], image, full, "input image")
-    axes[0].add_patch(plt.Rectangle(zoom[:2], 600, 600, fill=False, color="y", lw=0.6))
-    show(axes[1], image, zoom, "boxes of 4 detectors")
-    for k, color in enumerate(COLORS):
-        boxes, scores = detector.read_proposals(detector.proposals_path(k, "test"))[stem]
-        for b in boxes[scores >= 0.2]:
-            axes[1].add_patch(plt.Rectangle((b[0] - zoom[0], b[1] - zoom[1]), b[2] - b[0], b[3] - b[1], fill=False, color=color, lw=0.6))
     model = segmenter.load("final")
     boxes, scores = detector.read_proposals(detector.proposals_path(0, "test"))[stem]
     probs, crops, kept, geometry = segmenter.predict(model, image, boxes, scores)
     order = np.argsort(-scores, kind="stable")[:len(crops)]
     bx, by, bw, bh = cocomask.toBbox(best)
     j = int(np.argmax(detector.box_iou([bx, by, bx + bw, by + bh], boxes[order])[0]))   # the crop of that filament
-    x0, y0, x1, y1 = crops[j]
-    b = boxes[order[j]] - [x0, y0, x0, y0]
-    show(axes[2], image, (x0, y0, x1, y1), "crop + box prompt")
-    axes[2].add_patch(plt.Rectangle(b[:2], b[2] - b[0], b[3] - b[1], fill=False, color="y", lw=0.8))
-    axes[3].imshow(segmenter.restore(probs[j], geometry[j]), cmap="magma", vmin=0, vmax=1)
-    axes[3].set_xticks([]); axes[3].set_yticks([]); axes[3].set_title("U-Net probability")
-    show(axes[4], image, zoom, "ensemble + selection")
-    outline(axes[4], [r for r, _ in selection[stem]], "cyan", 0.7, zoom)
-    show(axes[5], image, full, "one mask per filament")
-    outline(axes[5], [r for r, _ in selection[stem]], "cyan", 0.4, full)
-    fig.subplots_adjust(left=0.005, right=0.995, top=0.86, bottom=0.01, wspace=0.06)
+    x0, y0, x1, y1 = crop = tuple(int(v) for v in crops[j])
+    b = np.round(boxes[order[j]] - [x0, y0, x0, y0]).astype(int)
+    prompt = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    prompt[max(b[1], 0):b[3], max(b[0], 0):b[2]] = 255
+    proposals = [detector.read_proposals(detector.proposals_path(k, "test"))[stem] for k in range(4)]
+    candidates = [segmenter.read_candidates(run.masks_path("final", "test", k))[stem] for k in range(4)]
+
+    W, H, S, y = 7.1, 1.42, 0.98, 0.2                   # inches: figure, side of a card, lower edge of the cards
+    A, B = DEPTH
+    mid = y + (S + B * S) / 2
+    fig = plt.figure(figsize=(W, H))
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set_xlim(0, W); ax.set_ylim(0, H); ax.set_aspect("equal"); ax.axis("off")
+    labels, x = [], 0.06
+
+    for k, flip in enumerate([-1, 0, 1, None]):                                          # the eight views as a deck
+        view = image if flip is None else cv2.flip(image, flip)
+        card(ax, picture(view, full, S, boxes=[(zoom, YELLOW, 0.8)] if flip is None else ()), x + 0.07 * k, y, S,
+             alpha=(0.35, 0.5, 0.7, 1)[k], zorder=3 + 0.1 * k)
+    labels.append((x + (0.21 + A * S) / 2, "image, 8 views")); x += 0.21 + A * S + 0.08
+    arrow(ax, x, mid, 0.16); x += 0.2
+    start = x
+    for i, (w, h) in enumerate([(0.05, 0.78), (0.06, 0.62), (0.07, 0.48), (0.08, 0.36), (0.09, 0.26)]):
+        slab(ax, x, mid - (h + B * h) / 2, w, h, "#bcd3f2", "#4a6fa5", zorder=4 + 0.1 * i)
+        x += w + 0.075
+    x += A * 0.26
+    labels.append(((start + x) / 2, "4 × YOLO26s"))
+    arrow(ax, x + 0.02, mid, 0.18, "WBF"); x += 0.24
+    nested = [(b, COLORS[k], 0.45 + 0.35 * k) for k in reversed(range(4)) for b in proposals[k][0][proposals[k][1] >= 0.2]]
+    card(ax, picture(image, zoom, S, boxes=nested + [(crop, YELLOW, 0.7)]), x, y, S)
+    labels.append((x + A * S / 2, "boxes")); x += A * S + 0.08
+    arrow(ax, x, mid, 0.16); x += 0.2
+    card(ax, picture(prompt, (0, 0, x1 - x0, y1 - y0), S), x, y, S)
+    card(ax, picture(image, crop, S, boxes=[(boxes[order[j]], YELLOW, 1.0)]), x + 0.24, y, S, zorder=3.2)
+    labels.append((x + (0.24 + A * S) / 2, "crop + box prompt")); x += 0.24 + A * S + 0.08
+    arrow(ax, x, mid, 0.16); x += 0.2
+    start, tops = x, []
+    sizes = [(0.04, 0.8), (0.05, 0.6), (0.06, 0.44), (0.07, 0.32), (0.08, 0.24), (0.07, 0.32), (0.06, 0.44), (0.05, 0.6), (0.04, 0.8)]
+    for i, (w, h) in enumerate(sizes):                                                   # encoder, bottleneck, decoder
+        bottom = mid - (h + B * h) / 2
+        slab(ax, x, bottom, w, h, "#f6c99c" if i < 4 else "#f3a76a" if i == 4 else "#fbe0c4", "#b36a24", zorder=4 + 0.1 * i)
+        tops.append((x + w / 2 + A * h / 2, bottom + h + B * h + 0.01))
+        x += w + 0.06
+    x += A * 0.8 - 0.06
+    for i in range(4):                                                                   # skip connections
+        ax.add_patch(FancyArrowPatch(tops[i], tops[8 - i], arrowstyle="-|>,head_length=1.8,head_width=1.0", color="#b36a24", lw=0.5,
+                                     connectionstyle=f"arc3,rad=-{0.28 - 0.03 * i}", shrinkA=0, shrinkB=0, alpha=0.85, zorder=8))
+    labels.append(((start + x) / 2, "U-Net (ResNet18)"))
+    arrow(ax, x + 0.02, mid, 0.16); x += 0.22
+    card(ax, picture(segmenter.restore(probs[j], geometry[j]), (0, 0, x1 - x0, y1 - y0), S, cmap="magma", vmax=1), x, y, S)
+    labels.append((x + A * S / 2, "probability")); x += A * S + 0.08
+    arrow(ax, x, mid, 0.16); x += 0.2
+    nested = [([r for score, r in candidates[k] if score >= 0.1], COLORS[k], 0.4 + 0.4 * k) for k in reversed(range(4))]
+    card(ax, picture(image, zoom, S, outlines=nested), x, y, S)
+    labels.append((x + A * S / 2, "candidates")); x += A * S + 0.08
+    arrow(ax, x, mid, 0.24, "merge\nselect"); x += 0.28
+    card(ax, picture(image, full, S, outlines=[([r for r, _ in selection[stem]], "#00e5ff", 0.9)]), x, y, S)
+    labels.append((x + A * S / 2, "instances"))
+    for lx, text in labels:
+        ax.text(lx, y - 0.06, text, ha="center", va="top", fontsize=7.5, family=SANS, color="0.12")
+    fig.savefig(OUT / "pipeline.pdf", dpi=600, metadata={"CreationDate": None})
     fig.savefig(OUT / "pipeline.png", dpi=300)
 
 
