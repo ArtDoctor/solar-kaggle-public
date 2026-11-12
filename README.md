@@ -6,7 +6,7 @@ filament, scored by Panoptic Quality against every annotator record.
 | | |
 |---|---|
 | Validation (fold 0, 156 images no model saw) | PQ 0.462 (95% interval 0.441 to 0.483) |
-| Public leaderboard | 0.40 |
+| Public leaderboard (Kaggle team `Ash_`) | 0.40 |
 
 ![pipeline](report/figures/pipeline.png)
 
@@ -17,7 +17,7 @@ filament, scored by Panoptic Quality against every annotator record.
    and outputs that filament's mask. It is trained on crops prompted with the detectors' out-of-fold boxes, one annotator
    record per image per epoch. At inference: four flips, threshold 0.40, largest connected piece.
 3. **Instances.** Candidates of the four detectors that overlap (mask IoU > 0.5) become one object scored by the mean
-   detector confidence. Objects are taken greedily without overlapping pixels, fragments closer than 8 px are merged,
+   detector confidence. Objects are taken greedily without overlapping pixels, fragments at most 8 px apart are merged,
    and the cutoff gives 6.2 instances per image.
 
 The 4-page report is report/report.pdf; notebooks/pipeline.ipynb shows every step on real images.
@@ -48,6 +48,10 @@ From scratch, about three hours on one RTX 4070 (the validation step inside take
 ```bash
 ./reproduce.sh          # -> work/submission.csv, and the fold-0 validation score on the way
 ```
+
+Training on the GPU is not deterministic, so a from-scratch run gives a slightly different file. Between two
+development runs of this pipeline, 95% of the test instances matched (IoU > 0.5); the validation score varies as
+described under Validation.
 
 From the trained weights in `weights/` (the ones behind the submitted file), about 20 minutes:
 
