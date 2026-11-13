@@ -20,7 +20,8 @@ filament, scored by Panoptic Quality against every annotator record.
    detector confidence. Objects are taken greedily without overlapping pixels, fragments at most 8 px apart are merged,
    and the cutoff gives 6.2 instances per image.
 
-The 4-page report is report/report.pdf; notebooks/pipeline.ipynb shows every step on real images.
+The 4-page report is report/report.pdf. notebooks/pipeline.ipynb shows every step on real images and reproduces the
+submission from the weights in `weights/`, without retraining.
 
 ## Setup
 
@@ -64,8 +65,9 @@ python run.py segment --name validation --split heldout --fold 0
 python run.py evaluate --name validation
 ```
 
-With these weights the commands reproduce the submitted file byte for byte on the same software versions, and they
-produce everything notebooks/pipeline.ipynb reads.
+With these weights the commands reproduce the submitted file byte for byte on the same software versions.
+notebooks/pipeline.ipynb runs the same steps on its own: it loads the weights from `weights/`, computes whatever is
+not in `work/` yet and writes the same `work/submission.csv`.
 
 ## Code
 
@@ -105,3 +107,13 @@ four merged 0.40.
 
 The submission density (6.2 instances per image) is the best one on validation; public-board probes during development
 agreed (4.9 per image: 0.39, 6.4: 0.39, 8.3: 0.38).
+
+## License
+
+Copyright (C) 2026 Artem Shelamanov.
+
+The code and the trained weights in `weights/` are released under the GNU Affero General Public License v3.0
+(see LICENSE). The detectors are fine-tuned from Ultralytics YOLO26s, which is distributed under the same license.
+
+The competition data is not part of this repository. The GONG H-alpha images and MAGFiLO annotations that appear in
+the figures, the notebook and the report remain under the terms of the competition dataset (CC BY-NC 4.0).
